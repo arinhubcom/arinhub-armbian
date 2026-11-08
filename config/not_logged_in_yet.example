@@ -1,0 +1,101 @@
+# ==============================================================================
+# ARMBIAN UNATTENDED FIRST BOOT CONFIGURATION
+# Target image : Armbian on Ubuntu 26.04 LTS (resolute)
+# Reference    : https://docs.armbian.com/user-guide/autoconfig/
+# File location on the boot media: /root/.not_logged_in_yet
+# Purpose      : Headless setup, controlled by a Claude Code agent either
+#                remotely over SSH or locally on the board itself.
+#
+# PLACEHOLDER CONVENTION (read by the AI agent, see README.md):
+#   "__ASK_<NAME>__"           Required. Sensitive or user-specific value.
+#                              The agent MUST ask the user for it.
+#   "__ASK_OPTIONAL_<NAME>__"  Optional. The agent MUST ask; if the user
+#                              declines, the whole line is deleted.
+#   Any other value            Sensible default. The agent shows it to the
+#                              user once in a summary and keeps it unless
+#                              the user wants a change.
+#
+# NEVER commit a filled-in copy of this file. It contains plaintext secrets.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. NETWORK CONFIGURATION (background Wi-Fi auto-connect)
+# ------------------------------------------------------------------------------
+# Enable network configuration changes during the initial boot sequence
+PRESET_NET_CHANGE_DEFAULTS="1"
+
+# Ethernet fallback. Ignored by Armbian when Wi-Fi is enabled below.
+PRESET_NET_ETHERNET_ENABLED="1"
+
+# Enable the wireless interface and connect via NetworkManager.
+# Set to "0" for an Ethernet-only setup and delete the three Wi-Fi lines below.
+PRESET_NET_WIFI_ENABLED="1"
+
+# Wi-Fi network name (SSID)
+PRESET_NET_WIFI_SSID="__ASK_WIFI_SSID__"
+
+# Wi-Fi password (WPA-PSK, 8-63 characters), stored in plaintext
+PRESET_NET_WIFI_KEY="__ASK_WIFI_KEY__"
+
+# Wi-Fi regulatory domain, ISO 3166 alpha-2 country code (CZ = Czech Republic)
+PRESET_NET_WIFI_COUNTRYCODE="CZ"
+
+# Suppress the interactive nmtui Wi-Fi wizard during first login.
+# Must be "n" so the unattended run never waits for keyboard input
+# (Wi-Fi is already connected in the background by the values above).
+PRESET_CONNECT_WIRELESS="n"
+
+# ------------------------------------------------------------------------------
+# 1b. STATIC IP (optional, DHCP is the default)
+# ------------------------------------------------------------------------------
+# Applies to Wi-Fi when Wi-Fi is enabled, otherwise to Ethernet.
+# If enabled, ALL five values must be set, otherwise the network breaks.
+# PRESET_NET_USE_STATIC="1"
+# PRESET_NET_STATIC_IP="192.168.1.100"
+# PRESET_NET_STATIC_MASK="255.255.255.0"
+# PRESET_NET_STATIC_GATEWAY="192.168.1.1"
+# PRESET_NET_STATIC_DNS="1.1.1.1 1.0.0.1"
+
+# ------------------------------------------------------------------------------
+# 2. SYSTEM LOCALE & TIMEZONE
+# ------------------------------------------------------------------------------
+# Disable automatic language detection based on IP geolocation.
+# Must be "Y" or "n" (a value like "0" causes an infinite loop in
+# armbian-firstlogin).
+SET_LANG_BASED_ON_LOCATION="n"
+
+# English system output and logs (easiest for LLM/agent parsing)
+PRESET_LOCALE="en_US.UTF-8"
+
+# Local timezone
+PRESET_TIMEZONE="Europe/Prague"
+
+# ------------------------------------------------------------------------------
+# 3. USER ACCOUNTS & CREDENTIALS
+# ------------------------------------------------------------------------------
+# Setting PRESET_ROOT_PASSWORD or PRESET_USER_NAME makes first login fully
+# unattended. All four account values below must be set, otherwise Armbian
+# still stops and asks for the missing ones on the console.
+
+# Root password, required for local emergency console access (plaintext)
+PRESET_ROOT_PASSWORD="__ASK_ROOT_PASSWORD__"
+
+# Dedicated user account the Claude Code agent works as
+PRESET_USER_NAME="armbian_user"
+PRESET_USER_PASSWORD="__ASK_USER_PASSWORD__"
+PRESET_DEFAULT_REALNAME="Armbian Agent"
+
+# Default shell must be "bash" or "zsh" (do NOT use "/bin/bash" here)
+PRESET_USER_SHELL="bash"
+
+# ------------------------------------------------------------------------------
+# 4. SSH PUBLIC KEYS (optional, strongly recommended for agent access over SSH)
+# ------------------------------------------------------------------------------
+# HTTPS URL that returns an OpenSSH public key, fetched at first boot,
+# e.g. "https://github.com/<github-username>.keys".
+# Key-based login is safer than the plaintext passwords above.
+PRESET_USER_KEY="__ASK_OPTIONAL_USER_KEY_URL__"
+
+# ==============================================================================
+# END OF CONFIGURATION
+# ==============================================================================

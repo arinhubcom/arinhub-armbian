@@ -1,0 +1,6 @@
+# Filled-in first boot configs contain plaintext secrets. Only the
+# *.example template is tracked.
+config/*
+!config/*.example
+*.not_logged_in_yet
+.not_logged_in_yet
