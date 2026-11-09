@@ -12,16 +12,18 @@ Based on the official docs:
 
 | Path | Purpose |
 | --- | --- |
-| `config/not_logged_in_yet.example` | Config template with placeholders for sensitive values |
+| `config/not_logged_in_yet.example` | First boot config template with placeholders for sensitive values |
+| `config/provisioning.sh.example` | Provisioning script template: packages and hostname, run once as root |
 | `scripts/check-config.sh` | Validates a filled config without executing it |
 | `tests/check-config.test.sh` | Tests for the validator (`bash tests/check-config.test.sh`) |
+| `tests/provisioning.test.sh` | Tests for the provisioning script, with stubbed `apt-get` and `hostnamectl` |
 
 ## Placeholder convention
 
 The agent finds everything it has to ask about with one command:
 
 ```bash
-grep -n '__ASK_' config/not_logged_in_yet
+grep -n '__ASK_' config/not_logged_in_yet config/provisioning.sh
 ```
 
 | Value in the template | Meaning | What the agent does |
@@ -34,11 +36,14 @@ Filled configs live in `config/` and are git-ignored; only `*.example` is tracke
 
 ## How it works
 
-1. The agent copies the template, asks the user for the placeholder values and
-   validates the result with `scripts/check-config.sh`.
-2. The file is copied to `/root/.not_logged_in_yet` on the flashed boot media.
-3. At first boot Armbian applies it through the root console autologin; no
-   keyboard or monitor is needed.
+1. The agent copies both templates, asks the user for the placeholder values
+   and validates the results with `scripts/check-config.sh` and
+   `bash config/provisioning.sh --check`.
+2. The files are copied to `/root/.not_logged_in_yet` and
+   `/root/provisioning.sh` on the flashed boot media.
+3. At first boot Armbian applies the config through the root console
+   autologin; no keyboard or monitor is needed. After that first login it runs
+   the provisioning script once as root.
 4. The agent connects over SSH (or is installed on the board) and hardens the
    system.
 
@@ -78,7 +83,9 @@ https://docs.armbian.com/user-guide/autoconfig/
 
 ## Step 1 - Fill the config
 1. cp config/not_logged_in_yet.example config/not_logged_in_yet
-2. List placeholders:  grep -n '__ASK_' config/not_logged_in_yet
+   cp config/provisioning.sh.example config/provisioning.sh
+2. List placeholders:
+     grep -n '__ASK_' config/not_logged_in_yet config/provisioning.sh
 3. Ask the user for each placeholder, in ONE grouped message:
    - __ASK_WIFI_SSID__              Wi-Fi network name (only if Wi-Fi)
    - __ASK_WIFI_KEY__               Wi-Fi password, 8-63 chars (only if Wi-Fi)
@@ -92,6 +99,9 @@ https://docs.armbian.com/user-guide/autoconfig/
                                     not root
    - __ASK_REALNAME__               full name shown for that user,
                                     e.g. Armbian Agent
+   - __ASK_HOSTNAME__               hostname of the board (provisioning.sh):
+                                    lowercase letters, digits, dashes, 1-63
+                                    chars, no leading or trailing dash
    - __ASK_ROOT_PASSWORD__          root password for emergency console access
    - __ASK_USER_PASSWORD__          password of the agent user (also used by sudo)
    - __ASK_OPTIONAL_USER_KEY_URL__  HTTPS URL with the user's SSH public key,
@@ -109,10 +119,12 @@ https://docs.armbian.com/user-guide/autoconfig/
    IP, mask, gateway and DNS.
 5. Show ONE summary of the non-secret defaults and ask if any should change:
    locale (en_US.UTF-8), shell (bash), Ethernet fallback (on),
-   IP mode (DHCP).
-6. Validate until it prints OK:  scripts/check-config.sh config/not_logged_in_yet
-   The script prints key names only, never values. Fix each reported problem
-   by asking the user again.
+   IP mode (DHCP), packages installed by provisioning.sh (htop curl git).
+6. Validate both until each prints OK:
+     scripts/check-config.sh config/not_logged_in_yet
+     bash config/provisioning.sh --check
+   Both print names only, never secret values. Fix each reported problem by
+   asking the user again. `--check` validates only; it changes nothing.
 
 ## Step 2 - Write it to the boot media
 1. Run `lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS` and show the user which
@@ -120,16 +132,19 @@ https://docs.armbian.com/user-guide/autoconfig/
 2. Mount the ext4 root partition (Armbian usually has one partition, e.g.
    /dev/sdX1) to a temporary directory, then:
      sudo install -m 600 -o root -g root config/not_logged_in_yet <mnt>/root/.not_logged_in_yet
+     sudo install -m 700 -o root -g root config/provisioning.sh <mnt>/root/provisioning.sh
      sync && sudo umount <mnt>
-3. Ask the user whether to delete the local filled copy now (recommended once
+3. Ask the user whether to delete the local filled config now (recommended once
    the board is up) or keep it until Step 3 is verified.
 
 ## Step 3 - First boot
 1. Tell the user to insert the media and power the board on. First boot
    resizes the filesystem and runs the first login setup; allow 3-5 minutes,
    one reboot is normal.
-2. Find the board's IP: ask the user to check the router's DHCP leases, or try
-   `ping <board-hostname>.local`, or the static IP if one was set.
+2. Find the board's IP: try `ping <hostname>.local` (the hostname from
+   provisioning.sh; it is set only after provisioning, and only if mDNS is
+   running), ask the user to check the router's DHCP leases, or use the static
+   IP if one was set.
 3. Mode A: connect with `ssh <user>@<ip>` (key if provided, else the
    user's password - let the user type it, or use ssh-agent).
    Mode B: the user logs in locally or over SSH once and installs Claude Code
@@ -139,7 +154,12 @@ https://docs.armbian.com/user-guide/autoconfig/
 ## Step 4 - Verify and harden (ask before each change)
 1. Verify:  cat /etc/os-release  (expect Ubuntu 26.04, resolute);
    timedatectl; locale; ip -br addr; nmcli -t -f ACTIVE,SSID dev wifi (Wi-Fi);
-   sudo test ! -e /root/.not_logged_in_yet  (the presets file must be gone).
+   sudo test ! -e /root/.not_logged_in_yet  (the presets file must be gone);
+   hostnamectl --static  (expect the chosen hostname);
+   sudo tail -n 20 /var/log/armbian-provisioning.log  (expect
+   "Provisioning complete"). If provisioning failed, show the log, fix the
+   cause (usually no network yet) and, after the user agrees, rerun it with
+   `sudo bash /root/provisioning.sh` or a copy from this repository.
 2. Update:  sudo apt update && sudo apt full-upgrade -y   (or armbian-config).
 3. If an SSH key works for the user account, propose a drop-in
    /etc/ssh/sshd_config.d/10-hardening.conf with
@@ -161,8 +181,17 @@ https://docs.armbian.com/user-guide/autoconfig/
 
 ```bash
 cp config/not_logged_in_yet.example config/not_logged_in_yet
-$EDITOR config/not_logged_in_yet
+cp config/provisioning.sh.example config/provisioning.sh
+$EDITOR config/not_logged_in_yet config/provisioning.sh
 scripts/check-config.sh config/not_logged_in_yet
+bash config/provisioning.sh --check
+```
+
+Run the tests:
+
+```bash
+bash tests/check-config.test.sh
+bash tests/provisioning.test.sh
 ```
 
 ## Notes and gotchas
@@ -179,5 +208,9 @@ scripts/check-config.sh config/not_logged_in_yet
 - Passwords and the Wi-Fi key are stored in plaintext on the media until first
   boot finishes; prefer an SSH key (`PRESET_USER_KEY`) and do not leave the
   card lying around.
+- `/root/provisioning.sh` runs only once, as root, after the first successful
+  login. It stops on the first error (`set -euo pipefail`) and logs to
+  `/var/log/armbian-provisioning.log`; failed steps are not retried
+  automatically.
 - The whole config can also be served from a URL with
   `PRESET_CONFIGURATION="https://..."`, as the only line in the file.

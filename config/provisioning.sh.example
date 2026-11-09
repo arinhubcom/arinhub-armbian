@@ -1,0 +1,79 @@
+#!/bin/bash
+# ==============================================================================
+# ARMBIAN PROVISIONING SCRIPT
+# File location on the boot media: /root/provisioning.sh
+# Reference: https://docs.armbian.com/user-guide/autoconfig/#provisioning-script
+#
+# Armbian runs this file once, as root, after the first successful login
+# (manual or automated by /root/.not_logged_in_yet). Use it for final setup:
+# packages, system configuration, services.
+#
+# Same placeholder convention as not_logged_in_yet.example (see README.md):
+# the agent MUST ask the user for every "__ASK_<NAME>__" value.
+#
+# Check a filled copy on the workstation without changing anything:
+#   bash config/provisioning.sh --check
+# ==============================================================================
+set -euo pipefail
+
+# ------------------------------------------------------------------------------
+# SETTINGS
+# ------------------------------------------------------------------------------
+# Hostname of the board: lowercase letters, digits and dashes, 1-63 chars,
+# no leading or trailing dash. Reachable as <hostname>.local if mDNS is on.
+NEW_HOSTNAME="__ASK_HOSTNAME__"
+
+# Packages to install. curl and git are needed to install and use Claude Code.
+PACKAGES=(htop curl git)
+
+# Overridable for tests only; keep the defaults on the board.
+HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
+LOG_FILE="${LOG_FILE:-/var/log/armbian-provisioning.log}"
+
+# ------------------------------------------------------------------------------
+# VALIDATION (runs before any change)
+# ------------------------------------------------------------------------------
+validate() {
+  if [[ "$NEW_HOSTNAME" == *__ASK_* ]]; then
+    echo "error: NEW_HOSTNAME placeholder not answered yet" >&2
+    return 1
+  fi
+  if ! [[ "$NEW_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    echo "error: NEW_HOSTNAME must be 1-63 lowercase letters, digits or dashes" >&2
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------------------------
+# PROVISIONING
+# ------------------------------------------------------------------------------
+# Map 127.0.1.1 to the new hostname so sudo does not warn
+# "unable to resolve host" after the rename.
+update_hosts() {
+  local updated
+  updated="$(awk -v name="$NEW_HOSTNAME" '
+    $1 == "127.0.1.1" { if (!done) print "127.0.1.1 " name; done = 1; next }
+    { print }
+    END { if (!done) print "127.0.1.1 " name }
+  ' "$HOSTS_FILE")"
+  printf '%s\n' "$updated" >"$HOSTS_FILE"
+}
+
+provision() {
+  echo "Provisioning started: $(date -Is)"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y "${PACKAGES[@]}"
+  hostnamectl set-hostname "$NEW_HOSTNAME"
+  update_hosts
+  echo "Provisioning complete: $(date -Is)"
+}
+
+validate
+if [ "${1:-}" = "--check" ]; then
+  echo "OK: provisioning settings are valid"
+  exit 0
+fi
+
+provision 2>&1 | tee -a "$LOG_FILE"
+exit "${PIPESTATUS[0]}"
