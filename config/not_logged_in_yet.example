@@ -37,8 +37,9 @@ PRESET_NET_WIFI_SSID="__ASK_WIFI_SSID__"
 # Wi-Fi password (WPA-PSK, 8-63 characters), stored in plaintext
 PRESET_NET_WIFI_KEY="__ASK_WIFI_KEY__"
 
-# Wi-Fi regulatory domain, ISO 3166 alpha-2 country code (CZ = Czech Republic)
-PRESET_NET_WIFI_COUNTRYCODE="CZ"
+# Wi-Fi regulatory domain, ISO 3166 alpha-2 country code in uppercase
+# (e.g. CZ, DE, US). A wrong code can break Wi-Fi or violate local radio rules.
+PRESET_NET_WIFI_COUNTRYCODE="__ASK_WIFI_COUNTRYCODE__"
 
 # Suppress the interactive nmtui Wi-Fi wizard during first login.
 # Must be "n" so the unattended run never waits for keyboard input
@@ -67,8 +68,8 @@ SET_LANG_BASED_ON_LOCATION="n"
 # English system output and logs (easiest for LLM/agent parsing)
 PRESET_LOCALE="en_US.UTF-8"
 
-# Local timezone
-PRESET_TIMEZONE="Europe/Prague"
+# Local timezone, an IANA name such as Europe/Prague or Etc/UTC
+PRESET_TIMEZONE="__ASK_TIMEZONE__"
 
 # ------------------------------------------------------------------------------
 # 3. USER ACCOUNTS & CREDENTIALS
@@ -80,10 +81,11 @@ PRESET_TIMEZONE="Europe/Prague"
 # Root password, required for local emergency console access (plaintext)
 PRESET_ROOT_PASSWORD="__ASK_ROOT_PASSWORD__"
 
-# Dedicated user account the Claude Code agent works as
-PRESET_USER_NAME="armbian_user"
+# Dedicated user account the Claude Code agent works as.
+# User name: lowercase, starts with a letter or underscore, max 32 chars.
+PRESET_USER_NAME="__ASK_USER_NAME__"
 PRESET_USER_PASSWORD="__ASK_USER_PASSWORD__"
-PRESET_DEFAULT_REALNAME="Armbian Agent"
+PRESET_DEFAULT_REALNAME="__ASK_REALNAME__"
 
 # Default shell must be "bash" or "zsh" (do NOT use "/bin/bash" here)
 PRESET_USER_SHELL="bash"

@@ -82,6 +82,16 @@ https://docs.armbian.com/user-guide/autoconfig/
 3. Ask the user for each placeholder, in ONE grouped message:
    - __ASK_WIFI_SSID__              Wi-Fi network name (only if Wi-Fi)
    - __ASK_WIFI_KEY__               Wi-Fi password, 8-63 chars (only if Wi-Fi)
+   - __ASK_WIFI_COUNTRYCODE__       Wi-Fi country, ISO 3166 code in uppercase,
+                                    e.g. CZ (only if Wi-Fi)
+   - __ASK_TIMEZONE__               timezone, IANA name, e.g. Europe/Prague
+                                    (you may suggest the workstation's one from
+                                    `timedatectl show -p Timezone --value`)
+   - __ASK_USER_NAME__              login name of the agent user: lowercase,
+                                    starts with a letter or _, max 32 chars,
+                                    not root
+   - __ASK_REALNAME__               full name shown for that user,
+                                    e.g. Armbian Agent
    - __ASK_ROOT_PASSWORD__          root password for emergency console access
    - __ASK_USER_PASSWORD__          password of the agent user (also used by sudo)
    - __ASK_OPTIONAL_USER_KEY_URL__  HTTPS URL with the user's SSH public key,
@@ -94,12 +104,12 @@ https://docs.armbian.com/user-guide/autoconfig/
    password manager. Do not show it in chat.
 4. Replace each placeholder with the answer. If the user declines an OPTIONAL
    one, delete that whole line. For Ethernet only: set
-   PRESET_NET_WIFI_ENABLED="0" and delete the SSID and KEY lines. For a static
-   IP: uncomment the whole static block and ask for IP, mask, gateway and DNS.
+   PRESET_NET_WIFI_ENABLED="0" and delete the SSID, KEY and COUNTRYCODE
+   lines. For a static IP: uncomment the whole static block and ask for
+   IP, mask, gateway and DNS.
 5. Show ONE summary of the non-secret defaults and ask if any should change:
-   Wi-Fi country code (CZ), locale (en_US.UTF-8), timezone (Europe/Prague),
-   user name (armbian_user), real name (Armbian Agent), shell (bash),
-   Ethernet fallback (on), IP mode (DHCP).
+   locale (en_US.UTF-8), shell (bash), Ethernet fallback (on),
+   IP mode (DHCP).
 6. Validate until it prints OK:  scripts/check-config.sh config/not_logged_in_yet
    The script prints key names only, never values. Fix each reported problem
    by asking the user again.
@@ -120,7 +130,7 @@ https://docs.armbian.com/user-guide/autoconfig/
    one reboot is normal.
 2. Find the board's IP: ask the user to check the router's DHCP leases, or try
    `ping <board-hostname>.local`, or the static IP if one was set.
-3. Mode A: connect with `ssh armbian_user@<ip>` (key if provided, else the
+3. Mode A: connect with `ssh <user>@<ip>` (key if provided, else the
    user's password - let the user type it, or use ssh-agent).
    Mode B: the user logs in locally or over SSH once and installs Claude Code
    on the board:  curl -fsSL https://claude.ai/install.sh | bash

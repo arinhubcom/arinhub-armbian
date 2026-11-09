@@ -19,6 +19,10 @@ filled() {
     -e 's/__ASK_ROOT_PASSWORD__/test-root-pass-123/' \
     -e 's/__ASK_USER_PASSWORD__/test-user-pass-123/' \
     -e 's#__ASK_OPTIONAL_USER_KEY_URL__#https://github.com/example.keys#' \
+    -e 's/__ASK_WIFI_COUNTRYCODE__/CZ/' \
+    -e 's#__ASK_TIMEZONE__#Europe/Prague#' \
+    -e 's/__ASK_USER_NAME__/test_user/' \
+    -e 's/__ASK_REALNAME__/Test Agent/' \
     "$EXAMPLE"
 }
 
@@ -43,6 +47,23 @@ expect fail "unfilled example is rejected" "$EXAMPLE"
 
 f="$(case_file valid)"; filled >"$f"
 expect ok "filled example passes" "$f"
+
+for key in WIFI_COUNTRYCODE TIMEZONE USER_NAME REALNAME; do
+  if grep -q "\"__ASK_${key}__\"" "$EXAMPLE"; then
+    PASS=$((PASS + 1)); printf 'ok   example asks for %s\n' "$key"
+  else
+    FAIL=$((FAIL + 1)); printf 'FAIL example does not ask for %s\n' "$key"
+  fi
+done
+
+f="$(case_file bad-country)"; filled | sed 's/^PRESET_NET_WIFI_COUNTRYCODE=.*/PRESET_NET_WIFI_COUNTRYCODE="cz"/' >"$f"
+expect fail "lowercase country code is rejected" "$f"
+
+f="$(case_file bad-tz)"; filled | sed 's#^PRESET_TIMEZONE=.*#PRESET_TIMEZONE="Europe/Nowhere"#' >"$f"
+expect fail "unknown timezone is rejected" "$f"
+
+f="$(case_file empty-realname)"; filled | sed 's/^PRESET_DEFAULT_REALNAME=.*/PRESET_DEFAULT_REALNAME=""/' >"$f"
+expect fail "empty real name is rejected" "$f"
 
 f="$(case_file no-key)"; filled | sed '/^PRESET_USER_KEY=/d' >"$f"
 expect ok "optional key line may be deleted" "$f"
