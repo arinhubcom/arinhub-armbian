@@ -16,6 +16,13 @@
 #                              the user wants a change.
 #
 # NEVER commit a filled-in copy of this file. It contains plaintext secrets.
+# Armbian sources this file as shell: values must not contain " $ ` or \.
+# The passwords and the Wi-Fi key stay readable on the boot media until the
+# first boot deletes this file; prefer an SSH key (section 4) and do not leave
+# the card lying around.
+#
+# Alternative: serve this whole config from a URL and put only this line here:
+#   PRESET_CONFIGURATION="https://..."
 # ==============================================================================
 
 # ------------------------------------------------------------------------------

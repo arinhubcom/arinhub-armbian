@@ -12,6 +12,18 @@
 #   bash config/provisioning.sh --check     validate only, change nothing
 #   sudo bash /root/provisioning.sh         rerun on the board (idempotent)
 #
+# Behaviour:
+# - Stops on the first error. Every step and every rejected setting is logged
+#   to /var/log/armbian-provisioning.log. Armbian does not retry a failed run;
+#   fix the cause and rerun it by hand.
+# - Local steps (hostname, SSH key, sudo, SSH hardening) run before the
+#   network-dependent ones (apt, firewall), so a missing network still leaves
+#   the board reachable.
+# - Answering "no" for sudo or SSH hardening on a rerun removes the drop-in
+#   an earlier run created.
+# - Use a minimal (server) image: on desktop images armbian-firstlogin may log
+#   the console out before it reaches this script.
+#
 # Placeholder convention (see README.md): the agent MUST ask the user for every
 # "__ASK_<NAME>__" value. For a declined "__ASK_OPTIONAL_<NAME>__" value it
 # sets the value to "" (do not delete the line here).
@@ -41,10 +53,15 @@ _armbian_provisioning() (
   local AGENT_NOPASSWD_SUDO="__ASK_NOPASSWD_SUDO__"
 
   # "yes" = disable SSH password login and root login. Applied only if
-  # AGENT_USER has at least one authorized key, so nobody gets locked out.
+  # AGENT_USER has at least one valid authorized key. When the agent controls
+  # the board over SSH, that key must be one the agent's workstation holds
+  # (set AGENT_SSH_PUBKEY to it), or the agent cannot connect after boot.
   local HARDEN_SSH="__ASK_HARDEN_SSH__"
 
   # Defaults the agent confirms with the user in one summary.
+  # Not needed: "add-apt-repository universe" (Armbian images for resolute
+  # already enable main restricted universe multiverse) and nodejs/npm (the
+  # Claude Code native installer ships an arm64 binary without Node.js).
   local UPGRADE_SYSTEM="yes"
   local ENABLE_FIREWALL="yes"   # ufw: deny incoming except SSH and mDNS
   local -a PACKAGES=(
@@ -205,6 +222,8 @@ _armbian_provisioning() (
     # sshd -t needs this directory; it may be missing while ssh is
     # socket-activated and has not started yet.
     install -d -m 755 "$R/run/sshd"
+    # A failed test removes the drop-in, so password login stays on instead
+    # of leaving sshd with a broken config.
     if ! sshd -t; then
       rm -f "$SSHD_DROPIN"
       echo "warning: sshd config test failed; SSH hardening removed, password login stays on" >&2
