@@ -48,10 +48,37 @@ _armbian_provisioning() (
   local UPGRADE_SYSTEM="yes"
   local ENABLE_FIREWALL="yes"   # ufw: deny incoming except SSH and mDNS
   local -a PACKAGES=(
-    curl wget git tmux jq ripgrep fd-find tree htop ncdu
-    ufw avahi-daemon iputils-ping bind9-dnsutils
-    zip unzip xz-utils ca-certificates
-    python3 python3-venv python3-pip
+    # --- Agent essentials ---
+    curl            # HTTP client; runs the Claude Code installer, calls APIs
+    wget            # downloads; many vendor install scripts expect it
+    git             # version control; the agent works in repos, diffs, commits
+    tmux            # keeps long jobs and agent sessions alive after SSH drops
+    ca-certificates # CA trust store for HTTPS (curl, git, apt)
+
+    # --- Search and inspection (plain output an agent can parse) ---
+    jq              # parse JSON output, e.g. `ip -j addr`, API responses
+    ripgrep         # fast recursive text search (rg)
+    fd-find         # fast file finder (fdfind, linked to fd below)
+    tree            # compact view of a directory structure
+
+    # --- Monitoring (for the human) ---
+    htop            # interactive CPU, memory and process view
+    ncdu            # find what fills the SD card / eMMC
+
+    # --- Network ---
+    ufw             # firewall, configured by configure_firewall below
+    avahi-daemon    # mDNS, so the board answers as <hostname>.local
+    iputils-ping    # ping, basic connectivity checks
+    bind9-dnsutils  # dig and nslookup, DNS troubleshooting
+
+    # --- Archives ---
+    zip unzip       # .zip archives
+    xz-utils        # .xz archives, e.g. Armbian images and tarballs
+
+    # --- Python for scripts and tools ---
+    python3         # runtime for helper scripts
+    python3-venv    # virtual envs; Ubuntu blocks system-wide pip (PEP 668)
+    python3-pip     # pip, used inside those virtual envs
   )
 
   # Test hook only: prefix for every file path. Keep empty on the board.
