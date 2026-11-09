@@ -1,79 +1,262 @@
 #!/bin/bash
 # ==============================================================================
-# ARMBIAN PROVISIONING SCRIPT
+# ARMBIAN PROVISIONING SCRIPT (Claude Code agent setup)
 # File location on the boot media: /root/provisioning.sh
 # Reference: https://docs.armbian.com/user-guide/autoconfig/#provisioning-script
 #
-# Armbian runs this file once, as root, after the first successful login
-# (manual or automated by /root/.not_logged_in_yet). Use it for final setup:
-# packages, system configuration, services.
+# armbian-firstlogin SOURCES this file (". /root/provisioning.sh") as root at
+# the end of the first successful login. When sourced, the file re-runs itself
+# as a separate bash process, so "set -e", "exit" and variables never leak
+# into armbian-firstlogin and a failure never aborts it. It can also be run
+# directly:
+#   bash config/provisioning.sh --check     validate only, change nothing
+#   sudo bash /root/provisioning.sh         rerun on the board (idempotent)
 #
-# Same placeholder convention as not_logged_in_yet.example (see README.md):
-# the agent MUST ask the user for every "__ASK_<NAME>__" value.
-#
-# Check a filled copy on the workstation without changing anything:
-#   bash config/provisioning.sh --check
+# Placeholder convention (see README.md): the agent MUST ask the user for every
+# "__ASK_<NAME>__" value. For a declined "__ASK_OPTIONAL_<NAME>__" value it
+# sets the value to "" (do not delete the line here).
 # ==============================================================================
-set -euo pipefail
 
-# ------------------------------------------------------------------------------
-# SETTINGS
-# ------------------------------------------------------------------------------
-# Hostname of the board: lowercase letters, digits and dashes, 1-63 chars,
-# no leading or trailing dash. Reachable as <hostname>.local if mDNS is on.
-NEW_HOSTNAME="__ASK_HOSTNAME__"
+_armbian_provisioning() (
+  set -euo pipefail
 
-# Packages to install. curl and git are needed to install and use Claude Code.
-PACKAGES=(htop curl git)
+  # ----------------------------------------------------------------------------
+  # SETTINGS
+  # ----------------------------------------------------------------------------
+  # Hostname: lowercase letters, digits and dashes, 1-63 chars, no leading or
+  # trailing dash. Reachable as <hostname>.local through avahi-daemon (mDNS).
+  local NEW_HOSTNAME="__ASK_HOSTNAME__"
 
-# Overridable for tests only; keep the defaults on the board.
-HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
-LOG_FILE="${LOG_FILE:-/var/log/armbian-provisioning.log}"
+  # Agent user. MUST be the same value as PRESET_USER_NAME in
+  # /root/.not_logged_in_yet (Armbian creates the account before this runs).
+  local AGENT_USER="__ASK_USER_NAME__"
 
-# ------------------------------------------------------------------------------
-# VALIDATION (runs before any change)
-# ------------------------------------------------------------------------------
-validate() {
-  if [[ "$NEW_HOSTNAME" == *__ASK_* ]]; then
-    echo "error: NEW_HOSTNAME placeholder not answered yet" >&2
-    return 1
+  # Extra OpenSSH public key for AGENT_USER, one line, e.g. the content of
+  # ~/.ssh/id_ed25519.pub on the agent's workstation. Appended; keys already
+  # fetched from PRESET_USER_KEY are kept. "" = none.
+  local AGENT_SSH_PUBKEY="__ASK_OPTIONAL_SSH_PUBKEY__"
+
+  # "yes" = AGENT_USER runs sudo without a password, so the agent never hangs
+  # on a password prompt. Anyone holding the user's SSH key becomes root.
+  local AGENT_NOPASSWD_SUDO="__ASK_NOPASSWD_SUDO__"
+
+  # "yes" = disable SSH password login and root login. Applied only if
+  # AGENT_USER has at least one authorized key, so nobody gets locked out.
+  local HARDEN_SSH="__ASK_HARDEN_SSH__"
+
+  # Defaults the agent confirms with the user in one summary.
+  local UPGRADE_SYSTEM="yes"
+  local ENABLE_FIREWALL="yes"   # ufw: deny incoming except SSH and mDNS
+  local -a PACKAGES=(
+    curl wget git tmux jq ripgrep fd-find tree htop ncdu
+    ufw avahi-daemon iputils-ping bind9-dnsutils
+    zip unzip xz-utils ca-certificates
+    python3 python3-venv python3-pip
+  )
+
+  # Test hook only: prefix for every file path. Keep empty on the board.
+  local R="${TARGET_ROOT:-}"
+  local LOG_FILE="$R/var/log/armbian-provisioning.log"
+  local AGENT_HOME="$R/home/$AGENT_USER"
+  local SUDOERS_FILE="$R/etc/sudoers.d/90-$AGENT_USER-agent"
+  local SSHD_DROPIN="$R/etc/ssh/sshd_config.d/10-agent-hardening.conf"
+  # Wait up to 10 minutes for apt-daily / unattended-upgrades to release the
+  # dpkg lock, which they often hold right after first boot.
+  local -a APT_LOCK=(-o DPkg::Lock::Timeout=600)
+  local -a APT_OPTS=("${APT_LOCK[@]}" -y
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+
+  # ----------------------------------------------------------------------------
+  # VALIDATION (runs before any change)
+  # ----------------------------------------------------------------------------
+  die() { echo "error: $*" >&2; return 1; }
+
+  validate() {
+    local name
+    for name in NEW_HOSTNAME AGENT_USER AGENT_SSH_PUBKEY AGENT_NOPASSWD_SUDO HARDEN_SSH \
+      UPGRADE_SYSTEM ENABLE_FIREWALL; do
+      [[ "${!name}" != *__ASK_* ]] || die "$name placeholder not answered yet"
+    done
+    [[ "$NEW_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] \
+      || die "NEW_HOSTNAME must be 1-63 lowercase letters, digits or dashes"
+    [[ "$AGENT_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$AGENT_USER" != root ]] \
+      || die "AGENT_USER is not a valid user name"
+    for name in AGENT_NOPASSWD_SUDO HARDEN_SSH UPGRADE_SYSTEM ENABLE_FIREWALL; do
+      [[ "${!name}" =~ ^(yes|no)$ ]] || die "$name must be yes or no"
+    done
+    if [ -n "$AGENT_SSH_PUBKEY" ]; then
+      [[ "$AGENT_SSH_PUBKEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\ [A-Za-z0-9+/]+=*(\ [^[:cntrl:]]*)?$ ]] \
+        || die "AGENT_SSH_PUBKEY is not a single-line OpenSSH public key"
+    fi
+  }
+
+  # Board only: Armbian creates the user at first login, so --check on the
+  # workstation cannot test this.
+  require_user() {
+    id "$AGENT_USER" >/dev/null 2>&1 \
+      || die "user $AGENT_USER does not exist (must match PRESET_USER_NAME)"
+  }
+
+  # ----------------------------------------------------------------------------
+  # STEPS (local configuration first, network-dependent steps last)
+  # ----------------------------------------------------------------------------
+  # Append a line, first adding the missing final newline of the file, so the
+  # new line never glues onto the previous one.
+  append_line() {
+    local file="$1" line="$2"
+    if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
+      printf '\n' >>"$file"
+    fi
+    printf '%s\n' "$line" >>"$file"
+  }
+
+  reload_ssh() { systemctl try-reload-or-restart ssh; }
+
+  # Map 127.0.1.1 to the new hostname so sudo does not warn
+  # "unable to resolve host" after the rename.
+  set_hostname() {
+    echo "Setting hostname to $NEW_HOSTNAME"
+    hostnamectl set-hostname "$NEW_HOSTNAME"
+    local hosts
+    hosts="$(awk -v name="$NEW_HOSTNAME" '
+      $1 == "127.0.1.1" { if (!done) print "127.0.1.1 " name; done = 1; next }
+      { print }
+      END { if (!done) print "127.0.1.1 " name }
+    ' "$R/etc/hosts")"
+    printf '%s\n' "$hosts" >"$R/etc/hosts"
+  }
+
+  add_ssh_key() {
+    [ -n "$AGENT_SSH_PUBKEY" ] || return 0
+    echo "Adding SSH public key for $AGENT_USER"
+    local keys="$AGENT_HOME/.ssh/authorized_keys"
+    mkdir -p "$AGENT_HOME/.ssh"
+    touch "$keys"
+    grep -qxF "$AGENT_SSH_PUBKEY" "$keys" || append_line "$keys" "$AGENT_SSH_PUBKEY"
+    chmod 700 "$AGENT_HOME/.ssh"
+    chmod 600 "$keys"
+    chown -R "$AGENT_USER:$AGENT_USER" "$AGENT_HOME/.ssh"
+  }
+
+  configure_sudo() {
+    if [ "$AGENT_NOPASSWD_SUDO" != yes ]; then
+      if [ -e "$SUDOERS_FILE" ]; then
+        echo "Removing passwordless sudo for $AGENT_USER"
+        rm -f "$SUDOERS_FILE"
+      fi
+      return 0
+    fi
+    echo "Granting passwordless sudo to $AGENT_USER"
+    local tmp="$SUDOERS_FILE.tmp"
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$AGENT_USER" >"$tmp"
+    chmod 440 "$tmp"
+    visudo -cf "$tmp" || { rm -f "$tmp"; die "sudoers drop-in failed visudo check"; }
+    mv "$tmp" "$SUDOERS_FILE"
+  }
+
+  # Disable password login only if authorized_keys holds at least one key
+  # ssh-keygen can parse: armbian-firstlogin fetches PRESET_USER_KEY with curl
+  # without --fail, so a wrong URL leaves an HTML error page in that file.
+  harden_ssh() {
+    if [ "$HARDEN_SSH" != yes ]; then
+      if [ -e "$SSHD_DROPIN" ]; then
+        echo "Removing SSH hardening drop-in"
+        rm -f "$SSHD_DROPIN"
+        reload_ssh
+      fi
+      return 0
+    fi
+    if ! ssh-keygen -lf "$AGENT_HOME/.ssh/authorized_keys" >/dev/null 2>&1; then
+      echo "warning: $AGENT_USER has no valid authorized SSH key; skipping SSH hardening" >&2
+      return 0
+    fi
+    echo "Hardening SSH: key-only login, no root login"
+    printf '%s\n' \
+      "PasswordAuthentication no" \
+      "KbdInteractiveAuthentication no" \
+      "PermitRootLogin no" >"$SSHD_DROPIN"
+    # sshd -t needs this directory; it may be missing while ssh is
+    # socket-activated and has not started yet.
+    install -d -m 755 "$R/run/sshd"
+    if ! sshd -t; then
+      rm -f "$SSHD_DROPIN"
+      echo "warning: sshd config test failed; SSH hardening removed, password login stays on" >&2
+      return 0
+    fi
+    reload_ssh
+  }
+
+  # Keep apt and service restarts non-interactive for the agent.
+  configure_environment() {
+    grep -qx 'DEBIAN_FRONTEND=noninteractive' "$R/etc/environment" 2>/dev/null \
+      || append_line "$R/etc/environment" 'DEBIAN_FRONTEND=noninteractive'
+    if [ -d "$R/etc/needrestart/conf.d" ]; then
+      printf '%s\n' "\$nrconf{restart} = 'a';" >"$R/etc/needrestart/conf.d/90-agent-no-prompt.conf"
+    fi
+  }
+
+  install_packages() {
+    echo "Updating package index"
+    apt-get "${APT_LOCK[@]}" update
+    if [ "$UPGRADE_SYSTEM" = yes ]; then
+      echo "Upgrading installed packages"
+      apt-get "${APT_OPTS[@]}" upgrade
+    fi
+    echo "Installing agent packages: ${PACKAGES[*]}"
+    apt-get "${APT_OPTS[@]}" install "${PACKAGES[@]}"
+    # Ubuntu ships fd as "fdfind"; agents and docs expect "fd".
+    if command -v fdfind >/dev/null 2>&1; then
+      ln -sf "$(command -v fdfind)" "$R/usr/local/bin/fd"
+    fi
+  }
+
+  configure_firewall() {
+    [ "$ENABLE_FIREWALL" = yes ] || return 0
+    echo "Enabling ufw: deny incoming except SSH (22/tcp) and mDNS (5353/udp)"
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp
+    ufw allow 5353/udp
+    ufw --force enable
+  }
+
+  provision() {
+    export DEBIAN_FRONTEND=noninteractive
+    echo "Provisioning started: $(date -Is)"
+    set_hostname
+    add_ssh_key
+    configure_sudo
+    harden_ssh
+    configure_environment
+    install_packages
+    configure_firewall
+    echo "Provisioning complete: $(date -Is)"
+  }
+
+  # Every check and step runs inside the logged pipeline, so the log also
+  # explains a rejected run.
+  run_all() {
+    validate
+    require_user
+    provision
+  }
+
+  if [ "${1:-}" = "--check" ]; then
+    validate
+    echo "OK: provisioning settings are valid"
+    return 0
   fi
-  if ! [[ "$NEW_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
-    echo "error: NEW_HOSTNAME must be 1-63 lowercase letters, digits or dashes" >&2
-    return 1
-  fi
-}
+  run_all 2>&1 | tee -a "$LOG_FILE"
+  return "${PIPESTATUS[0]}"
+)
 
-# ------------------------------------------------------------------------------
-# PROVISIONING
-# ------------------------------------------------------------------------------
-# Map 127.0.1.1 to the new hostname so sudo does not warn
-# "unable to resolve host" after the rename.
-update_hosts() {
-  local updated
-  updated="$(awk -v name="$NEW_HOSTNAME" '
-    $1 == "127.0.1.1" { if (!done) print "127.0.1.1 " name; done = 1; next }
-    { print }
-    END { if (!done) print "127.0.1.1 " name }
-  ' "$HOSTS_FILE")"
-  printf '%s\n' "$updated" >"$HOSTS_FILE"
-}
-
-provision() {
-  echo "Provisioning started: $(date -Is)"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  apt-get install -y "${PACKAGES[@]}"
-  hostnamectl set-hostname "$NEW_HOSTNAME"
-  update_hosts
-  echo "Provisioning complete: $(date -Is)"
-}
-
-validate
-if [ "${1:-}" = "--check" ]; then
-  echo "OK: provisioning settings are valid"
-  exit 0
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  # Sourced by armbian-firstlogin: run this file as its own bash process.
+  # Calling the function directly in an "||" list would silently disable
+  # "set -e" inside it, and a failure must never abort armbian-firstlogin.
+  bash "${BASH_SOURCE[0]}" \
+    || echo "Provisioning FAILED, see /var/log/armbian-provisioning.log" >&2
+  unset -f _armbian_provisioning
+else
+  _armbian_provisioning "$@"
 fi
-
-provision 2>&1 | tee -a "$LOG_FILE"
-exit "${PIPESTATUS[0]}"

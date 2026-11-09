@@ -13,10 +13,10 @@ Based on the official docs:
 | Path | Purpose |
 | --- | --- |
 | `config/not_logged_in_yet.example` | First boot config template with placeholders for sensitive values |
-| `config/provisioning.sh.example` | Provisioning script template: packages and hostname, run once as root |
+| `config/provisioning.sh.example` | Provisioning script template, run once as root: hostname, SSH key, sudo, SSH hardening, packages, firewall |
 | `scripts/check-config.sh` | Validates a filled config without executing it |
 | `tests/check-config.test.sh` | Tests for the validator (`bash tests/check-config.test.sh`) |
-| `tests/provisioning.test.sh` | Tests for the provisioning script, with stubbed `apt-get` and `hostnamectl` |
+| `tests/provisioning.test.sh` | Tests for the provisioning script, with stubbed system commands and a sandbox root |
 
 ## Placeholder convention
 
@@ -29,7 +29,7 @@ grep -n '__ASK_' config/not_logged_in_yet config/provisioning.sh
 | Value in the template | Meaning | What the agent does |
 | --- | --- | --- |
 | `"__ASK_<NAME>__"` | Required, sensitive or user-specific | Must ask the user |
-| `"__ASK_OPTIONAL_<NAME>__"` | Optional | Must ask; if declined, deletes the whole line |
+| `"__ASK_OPTIONAL_<NAME>__"` | Optional | Must ask; if declined, deletes the whole line (`not_logged_in_yet`) or sets it to `""` (`provisioning.sh`) |
 | any other value | Sensible default | Shows it once in a summary, keeps it unless the user changes it |
 
 Filled configs live in `config/` and are git-ignored; only `*.example` is tracked.
@@ -42,10 +42,11 @@ Filled configs live in `config/` and are git-ignored; only `*.example` is tracke
 2. The files are copied to `/root/.not_logged_in_yet` and
    `/root/provisioning.sh` on the flashed boot media.
 3. At first boot Armbian applies the config through the root console
-   autologin; no keyboard or monitor is needed. After that first login it runs
-   the provisioning script once as root.
-4. The agent connects over SSH (or is installed on the board) and hardens the
-   system.
+   autologin; no keyboard or monitor is needed. At the end of that first login
+   it runs the provisioning script once as root: hostname, SSH key,
+   passwordless sudo and SSH hardening (if chosen), packages, firewall.
+4. The agent connects over SSH (or is installed on the board) and verifies
+   the result.
 
 ---
 
@@ -64,8 +65,9 @@ https://docs.armbian.com/user-guide/autoconfig/
   user-specific. NEVER guess, invent or reuse example values for them. Ask.
 - Never echo a secret back, never print it in a summary, log, commit message
   or command line that ends up in shell history. Refer to it as "set" / "not set".
-- The filled file goes to config/not_logged_in_yet only. It is git-ignored;
-  never commit it, never copy it anywhere else on this machine.
+- The filled files go to config/not_logged_in_yet and config/provisioning.sh
+  only. They are git-ignored; never commit them, never copy them anywhere else
+  on this machine.
 - Values must not contain the characters  "  $  `  \  because Armbian sources
   the file as shell. If the user's value contains one, explain why and ask for
   another (for Wi-Fi this may mean changing the router password).
@@ -79,7 +81,9 @@ https://docs.armbian.com/user-guide/autoconfig/
 3. Where is the flashed boot media: device path (e.g. /dev/sdX, /dev/mmcblk0)
    or already mounted path? If the image is not flashed yet, tell the user to
    flash the Armbian Ubuntu 26.04 image for their board first (Armbian Imager
-   or balenaEtcher) and come back.
+   or balenaEtcher) and come back. Recommend a minimal (server) image: on
+   desktop images armbian-firstlogin may log the console out before it
+   reaches the provisioning script.
 
 ## Step 1 - Fill the config
 1. cp config/not_logged_in_yet.example config/not_logged_in_yet
@@ -102,29 +106,51 @@ https://docs.armbian.com/user-guide/autoconfig/
    - __ASK_HOSTNAME__               hostname of the board (provisioning.sh):
                                     lowercase letters, digits, dashes, 1-63
                                     chars, no leading or trailing dash
+   - __ASK_NOPASSWD_SUDO__          yes/no: may the agent user run sudo
+                                    without a password? Explain: convenient
+                                    for an autonomous agent (no hanging on a
+                                    password prompt), but anyone with that
+                                    user's SSH key becomes root
+   - __ASK_HARDEN_SSH__             yes/no: disable SSH password login and
+                                    root login? Applied only if the user has
+                                    a valid SSH key. In mode A it needs a key
+                                    THIS workstation holds (answer
+                                    __ASK_OPTIONAL_SSH_PUBKEY__ with it), or
+                                    you cannot connect after first boot
+   - __ASK_OPTIONAL_SSH_PUBKEY__    one-line OpenSSH public key added for the
+                                    agent user (provisioning.sh). In mode A
+                                    offer this workstation's key, e.g.
+                                    `cat ~/.ssh/id_ed25519.pub` (a public key
+                                    is not a secret; never read a private key)
    - __ASK_ROOT_PASSWORD__          root password for emergency console access
    - __ASK_USER_PASSWORD__          password of the agent user (also used by sudo)
    - __ASK_OPTIONAL_USER_KEY_URL__  HTTPS URL with the user's SSH public key,
                                     e.g. https://github.com/<github-username>.keys
-                                    Strongly recommended for mode A.
+                                    Strongly recommended for mode A (or use
+                                    __ASK_OPTIONAL_SSH_PUBKEY__ above).
    For both passwords offer to generate a strong one instead
    (e.g. `openssl rand -base64 24 | tr -d '/+='`); if the user accepts, write it
    into the file directly and tell them where to read it once
    (`grep PASSWORD config/not_logged_in_yet`) so they can store it in their
    password manager. Do not show it in chat.
 4. Replace each placeholder with the answer. If the user declines an OPTIONAL
-   one, delete that whole line. For Ethernet only: set
+   one, delete that whole line in not_logged_in_yet, or set it to "" in
+   provisioning.sh. Use the same user name in both files
+   (__ASK_USER_NAME__ appears in both). For Ethernet only: set
    PRESET_NET_WIFI_ENABLED="0" and delete the SSID, KEY and COUNTRYCODE
    lines. For a static IP: uncomment the whole static block and ask for
    IP, mask, gateway and DNS.
 5. Show ONE summary of the non-secret defaults and ask if any should change:
    locale (en_US.UTF-8), shell (bash), Ethernet fallback (on),
-   IP mode (DHCP), packages installed by provisioning.sh (htop curl git).
+   IP mode (DHCP), and from provisioning.sh: UPGRADE_SYSTEM (yes),
+   ENABLE_FIREWALL (yes: ufw denies incoming except SSH 22/tcp and mDNS
+   5353/udp), PACKAGES (list them).
 6. Validate both until each prints OK:
      scripts/check-config.sh config/not_logged_in_yet
      bash config/provisioning.sh --check
    Both print names only, never secret values. Fix each reported problem by
-   asking the user again. `--check` validates only; it changes nothing.
+   asking the user again. `--check` validates only; it changes nothing. That
+   the user exists is checked later on the board, before any change.
 
 ## Step 2 - Write it to the boot media
 1. Run `lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS` and show the user which
@@ -141,17 +167,18 @@ https://docs.armbian.com/user-guide/autoconfig/
 1. Tell the user to insert the media and power the board on. First boot
    resizes the filesystem and runs the first login setup; allow 3-5 minutes,
    one reboot is normal.
-2. Find the board's IP: try `ping <hostname>.local` (the hostname from
-   provisioning.sh; it is set only after provisioning, and only if mDNS is
-   running), ask the user to check the router's DHCP leases, or use the static
-   IP if one was set.
-3. Mode A: connect with `ssh <user>@<ip>` (key if provided, else the
-   user's password - let the user type it, or use ssh-agent).
+2. Find the board's IP: try `ping <hostname>.local` (provisioning sets the
+   hostname and installs avahi-daemon; allow a few more minutes for the
+   package upgrade), ask the user to check the router's DHCP leases, or use
+   the static IP if one was set.
+3. Mode A: connect with `ssh <user>@<ip>` using the key from
+   __ASK_OPTIONAL_SSH_PUBKEY__. Without hardening the user's password also
+   works - let the user type it, or use ssh-agent.
    Mode B: the user logs in locally or over SSH once and installs Claude Code
    on the board:  curl -fsSL https://claude.ai/install.sh | bash
    then runs `claude` and completes the login themselves.
 
-## Step 4 - Verify and harden (ask before each change)
+## Step 4 - Verify (read-only; ask before any change)
 1. Verify:  cat /etc/os-release  (expect Ubuntu 26.04, resolute);
    timedatectl; locale; ip -br addr; nmcli -t -f ACTIVE,SSID dev wifi (Wi-Fi);
    sudo test ! -e /root/.not_logged_in_yet  (the presets file must be gone);
@@ -160,20 +187,19 @@ https://docs.armbian.com/user-guide/autoconfig/
    "Provisioning complete"). If provisioning failed, show the log, fix the
    cause (usually no network yet) and, after the user agrees, rerun it with
    `sudo bash /root/provisioning.sh` or a copy from this repository.
-2. Update:  sudo apt update && sudo apt full-upgrade -y   (or armbian-config).
-3. If an SSH key works for the user account, propose a drop-in
-   /etc/ssh/sshd_config.d/10-hardening.conf with
-     PasswordAuthentication no
-     PermitRootLogin no
-   Before reloading sshd, open a SECOND SSH session and keep it open, then
-   `sudo sshd -t && sudo systemctl reload ssh`, and confirm a fresh key login
-   works before closing the old session.
-4. Ask whether the agent user should get passwordless sudo. Explain the trade
-   off (convenient for an autonomous agent, but anyone with that SSH key
-   becomes root). Only on an explicit yes, create
-   /etc/sudoers.d/90-<user> with `<user> ALL=(ALL) NOPASSWD:ALL`, mode 440,
-   checked with `sudo visudo -cf`.
-5. Report what was done, the board's IP / hostname, and which secrets the user
+2. Verify what provisioning configured:
+   sudo -n true  (succeeds only with passwordless sudo, if chosen);
+   sudo sshd -T | grep -E '^(passwordauthentication|permitrootlogin) '
+   (expect "no" for both if hardening was chosen and a key existed; the log
+   says "skipping SSH hardening" if no valid key was found);
+   sudo ufw status verbose  (if the firewall was enabled);
+   command -v rg fd jq tmux.
+3. To change the SSH or sudo setup later, edit config/provisioning.sh, copy it
+   to the board and rerun it with `sudo bash /root/provisioning.sh` after the
+   user agrees. Answering "no" removes the sudo or SSH drop-in again. Set
+   UPGRADE_SYSTEM="no" for such a rerun to skip the full package upgrade. Before any SSH change, keep a second SSH session open and
+   confirm a fresh key login works before closing it.
+4. Report what was done, the board's IP / hostname, and which secrets the user
    still has to store safely. Never include secret values in the report.
 ````
 
@@ -208,9 +234,27 @@ bash tests/provisioning.test.sh
 - Passwords and the Wi-Fi key are stored in plaintext on the media until first
   boot finishes; prefer an SSH key (`PRESET_USER_KEY`) and do not leave the
   card lying around.
-- `/root/provisioning.sh` runs only once, as root, after the first successful
-  login. It stops on the first error (`set -euo pipefail`) and logs to
+- `armbian-firstlogin` sources `/root/provisioning.sh` (`. /root/provisioning.sh`)
+  once, as root, at the end of the first successful login. The template then
+  re-runs itself as a separate `bash` process, so its `set -euo pipefail` and
+  `exit` cannot affect `armbian-firstlogin`, and a failure is only reported.
+- Provisioning stops on the first error and logs to
   `/var/log/armbian-provisioning.log`; failed steps are not retried
-  automatically.
+  automatically. All steps are safe to rerun; a rerun with `no` for sudo or
+  SSH hardening removes the drop-in it created earlier.
+- Errors, including rejected settings, go to that log too. apt waits up to
+  10 minutes for the dpkg lock, which `apt-daily` often holds after first boot.
+- SSH hardening is applied only if `ssh-keygen -lf` finds a valid key in
+  `authorized_keys`: `armbian-firstlogin` downloads `PRESET_USER_KEY` with
+  `curl` without `--fail`, so a wrong URL stores an HTML error page there.
+  If `sshd -t` fails, the drop-in is removed and password login stays on.
+- On desktop images `armbian-firstlogin` may log the console out before it
+  reaches the provisioning script; use a minimal (server) image.
+- Local steps (hostname, SSH key, sudo, SSH hardening) run before the
+  network-dependent ones (apt, firewall), so a missing network leaves the
+  board reachable.
+- The Ubuntu sources in Armbian images for `resolute` already enable
+  `main restricted universe multiverse`, so no `add-apt-repository` is needed.
+- Claude Code's native installer ships an arm64 binary and needs no Node.js.
 - The whole config can also be served from a URL with
   `PRESET_CONFIGURATION="https://..."`, as the only line in the file.
