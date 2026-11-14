@@ -70,7 +70,16 @@ make_stubs
 # --- static ---------------------------------------------------------------------
 check "example has valid bash syntax" 'bash -n "$EXAMPLE"'
 for key in HOSTNAME USER_NAME NOPASSWD_SUDO HARDEN_SSH OPTIONAL_SSH_PUBKEY; do
-  check "example asks for $key" "grep -q '\"__ASK_${key}__\"' \"\$EXAMPLE\""
+  check "example asks for $key in single quotes" "grep -qF \"'__ASK_${key}__'\" \"\$EXAMPLE\""
+done
+
+# --- arguments: anything but none or exactly --check changes nothing ----------------
+for args in "--chek" "--check extra" "check"; do
+  reset_root; f="$(script_with)"
+  # shellcheck disable=SC2086 # split the argument list on purpose
+  run "$f" $args; rc=$?
+  check "argument '$args' is rejected with exit 2" '[ $rc -eq 2 ] && grep -q "^usage:" "$WORK/out"' "rc=$rc $(cat "$WORK/out")"
+  check "argument '$args' changes nothing" '[ ! -e "$WORK/calls" ] && [ ! -e "$R/var/log/armbian-provisioning.log" ]' "$(calls)"
 done
 
 # --- validation: nothing may change -----------------------------------------------
@@ -101,6 +110,16 @@ reset_root; f="$WORK/prov-multiline.sh"; content="$(cat "$(script_with)")"
 printf '%s\n' "${content//"$TEST_KEY"/"$TEST_KEY"$'\n'"command=/bin/sh $TEST_KEY"}" >"$f"
 check "multi-line test script really holds two key lines" '[ "$(grep -c "ssh-ed25519" "$f")" -ge 2 ] && bash -n "$f"'
 check "multi-line public key is rejected" '! run "$f" && grep -q "not a single-line OpenSSH public key" "$WORK/out"' "$(cat "$WORK/out")"
+
+# A key comment is free text; shell syntax in it must stay literal.
+INJ_KEY="${TEST_KEY% *} x\$(touch $WORK/pwned1) \`touch $WORK/pwned2\` \"\$HOME"
+reset_root; f="$(script_with armbian-01 test_user yes yes "$INJ_KEY")"
+run "$f" --check
+check "shell syntax in a key comment is not executed by --check" '[ ! -e "$WORK/pwned1" ] && [ ! -e "$WORK/pwned2" ]' "$(cat "$WORK/out")"
+check "key comment with shell syntax passes --check" 'grep -q "^OK:" "$WORK/out"' "$(cat "$WORK/out")"
+run "$f"
+check "shell syntax in a key comment is not executed by a run" '[ ! -e "$WORK/pwned1" ] && [ ! -e "$WORK/pwned2" ]' "$(cat "$WORK/out")"
+check "key with shell syntax in its comment is stored literally" 'grep -qxF "$INJ_KEY" "$R/home/test_user/.ssh/authorized_keys"' "$(cat "$R/home/test_user/.ssh/authorized_keys")"
 
 reset_root; f="$(script_with armbian-01 ghost)"
 check "--check does not need the user to exist on the workstation" 'run "$f" --check' "$(cat "$WORK/out")"
@@ -163,6 +182,15 @@ check "rerun with sudo and hardening declined succeeds" 'run "$f"' "$(cat "$WORK
 check "rerun with sudo declined removes the sudoers drop-in" '[ ! -e "$R/etc/sudoers.d/90-test_user-agent" ]'
 check "rerun with hardening declined removes the sshd drop-in" '[ ! -e "$R/etc/ssh/sshd_config.d/10-agent-hardening.conf" ]'
 check "removing the sshd drop-in reloads ssh" 'grep -q "^systemctl try-reload-or-restart ssh" "$WORK/calls"' "$(calls)"
+
+reset_root; run "$(script_with)"
+check "hardened run leaves the sshd drop-in" '[ -e "$R/etc/ssh/sshd_config.d/10-agent-hardening.conf" ]'
+printf '<html>404 Not Found</html>\n' >"$R/home/test_user/.ssh/authorized_keys"; rm -f "$WORK/calls"
+f="$(script_with armbian-01 test_user yes yes '')"
+check "rerun with hardening but no valid key succeeds" 'run "$f"' "$(cat "$WORK/out")"
+check "rerun with hardening but no valid key removes the sshd drop-in" '[ ! -e "$R/etc/ssh/sshd_config.d/10-agent-hardening.conf" ]'
+check "removing the drop-in for lack of a key reloads ssh" 'grep -q "^systemctl try-reload-or-restart ssh" "$WORK/calls"' "$(calls)"
+check "lack of a key is reported" 'grep -qi "no valid authorized SSH key" "$WORK/out"' "$(cat "$WORK/out")"
 
 # --- options off ----------------------------------------------------------------------
 reset_root; f="$(script_with armbian-01 test_user no no '')"

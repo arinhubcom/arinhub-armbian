@@ -28,9 +28,14 @@ grep -n '__ASK_' config/not_logged_in_yet config/provisioning.sh
 
 | Value in the template | Meaning | What the agent does |
 | --- | --- | --- |
-| `"__ASK_<NAME>__"` | Required, sensitive or user-specific | Must ask the user |
-| `"__ASK_OPTIONAL_<NAME>__"` | Optional | Must ask; if declined, deletes the whole line (`not_logged_in_yet`) or sets it to `""` (`provisioning.sh`) |
+| `"__ASK_<NAME>__"` / `'__ASK_<NAME>__'` | Required, sensitive or user-specific | Must ask the user |
+| `"__ASK_OPTIONAL_<NAME>__"` / `'__ASK_OPTIONAL_<NAME>__'` | Optional | Must ask; if declined, deletes the whole line (`not_logged_in_yet`) or sets it to `''` (`provisioning.sh`) |
 | any other value | Sensible default | Shows it once in a summary, keeps it unless the user changes it |
+
+`not_logged_in_yet` uses double quotes, and `scripts/check-config.sh` rejects
+`$`, backticks and backslashes in its values. `provisioning.sh` uses single
+quotes, so those characters stay literal there; its values must not contain a
+single quote (for an SSH key whose comment has one, leave the comment out).
 
 Filled configs live in `config/` and are git-ignored; only `*.example` is tracked.
 
@@ -78,7 +83,8 @@ Rules
    (`grep -n '__ASK_' config/not_logged_in_yet config/provisioning.sh`).
    Offer generated passwords (`openssl rand -base64 24 | tr -d '/+='`) written
    straight into the file. In mode A offer this workstation's public key for
-   __ASK_OPTIONAL_SSH_PUBKEY__. Then show the remaining defaults once and
+   __ASK_OPTIONAL_SSH_PUBKEY__ (without its comment if that holds a single
+   quote). Then show the remaining defaults once and
    apply any changes.
 3. Validate until both print OK: `scripts/check-config.sh
    config/not_logged_in_yet` and `bash config/provisioning.sh --check`.

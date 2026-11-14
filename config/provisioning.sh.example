@@ -25,8 +25,10 @@
 #   the console out before it reaches this script.
 #
 # Placeholder convention (see README.md): the agent MUST ask the user for every
-# "__ASK_<NAME>__" value. For a declined "__ASK_OPTIONAL_<NAME>__" value it
-# sets the value to "" (do not delete the line here).
+# '__ASK_<NAME>__' value. For a declined '__ASK_OPTIONAL_<NAME>__' value it
+# sets the value to '' (do not delete the line here). The values are in single
+# quotes, so $, backticks, backslashes and double quotes stay literal; a value
+# must not contain a single quote.
 # ==============================================================================
 
 _armbian_provisioning() (
@@ -37,26 +39,27 @@ _armbian_provisioning() (
   # ----------------------------------------------------------------------------
   # Hostname: lowercase letters, digits and dashes, 1-63 chars, no leading or
   # trailing dash. Reachable as <hostname>.local through avahi-daemon (mDNS).
-  local NEW_HOSTNAME="__ASK_HOSTNAME__"
+  local NEW_HOSTNAME='__ASK_HOSTNAME__'
 
   # Agent user. MUST be the same value as PRESET_USER_NAME in
   # /root/.not_logged_in_yet (Armbian creates the account before this runs).
-  local AGENT_USER="__ASK_USER_NAME__"
+  local AGENT_USER='__ASK_USER_NAME__'
 
   # Extra OpenSSH public key for AGENT_USER, one line, e.g. the content of
   # ~/.ssh/id_ed25519.pub on the agent's workstation. Appended; keys already
-  # fetched from PRESET_USER_KEY are kept. "" = none.
-  local AGENT_SSH_PUBKEY="__ASK_OPTIONAL_SSH_PUBKEY__"
+  # fetched from PRESET_USER_KEY are kept. '' = none. If the comment (the text
+  # after the key) contains a single quote, leave the comment out.
+  local AGENT_SSH_PUBKEY='__ASK_OPTIONAL_SSH_PUBKEY__'
 
   # "yes" = AGENT_USER runs sudo without a password, so the agent never hangs
   # on a password prompt. Anyone holding the user's SSH key becomes root.
-  local AGENT_NOPASSWD_SUDO="__ASK_NOPASSWD_SUDO__"
+  local AGENT_NOPASSWD_SUDO='__ASK_NOPASSWD_SUDO__'
 
   # "yes" = disable SSH password login and root login. Applied only if
   # AGENT_USER has at least one valid authorized key. When the agent controls
   # the board over SSH, that key must be one the agent's workstation holds
   # (set AGENT_SSH_PUBKEY to it), or the agent cannot connect after boot.
-  local HARDEN_SSH="__ASK_HARDEN_SSH__"
+  local HARDEN_SSH='__ASK_HARDEN_SSH__'
 
   # Defaults the agent confirms with the user in one summary.
   # Not needed: "add-apt-repository universe" (Armbian images for resolute
@@ -201,17 +204,22 @@ _armbian_provisioning() (
   # Disable password login only if authorized_keys holds at least one key
   # ssh-keygen can parse: armbian-firstlogin fetches PRESET_USER_KEY with curl
   # without --fail, so a wrong URL leaves an HTML error page in that file.
+  # Remove the drop-in an earlier run left, so password login works again.
+  remove_ssh_hardening() {
+    [ -e "$SSHD_DROPIN" ] || return 0
+    echo "Removing SSH hardening drop-in"
+    rm -f "$SSHD_DROPIN"
+    reload_ssh
+  }
+
   harden_ssh() {
     if [ "$HARDEN_SSH" != yes ]; then
-      if [ -e "$SSHD_DROPIN" ]; then
-        echo "Removing SSH hardening drop-in"
-        rm -f "$SSHD_DROPIN"
-        reload_ssh
-      fi
+      remove_ssh_hardening
       return 0
     fi
     if ! ssh-keygen -lf "$AGENT_HOME/.ssh/authorized_keys" >/dev/null 2>&1; then
-      echo "warning: $AGENT_USER has no valid authorized SSH key; skipping SSH hardening" >&2
+      echo "warning: $AGENT_USER has no valid authorized SSH key; skipping SSH hardening and removing any earlier one, password login stays on" >&2
+      remove_ssh_hardening
       return 0
     fi
     echo "Hardening SSH: key-only login, no root login"
@@ -287,10 +295,16 @@ _armbian_provisioning() (
     provision
   }
 
-  if [ "${1:-}" = "--check" ]; then
+  # No argument = real run, exactly "--check" = validate only. Anything else
+  # (a typo such as "--chek") stops before any change.
+  if [ "$#" -eq 1 ] && [ "$1" = "--check" ]; then
     validate
     echo "OK: provisioning settings are valid"
     return 0
+  fi
+  if [ "$#" -ne 0 ]; then
+    echo "usage: bash ${0##*/} [--check]" >&2
+    return 2
   fi
   run_all 2>&1 | tee -a "$LOG_FILE"
   return "${PIPESTATUS[0]}"
