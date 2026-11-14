@@ -59,6 +59,18 @@ done
 f="$(case_file bad-country)"; filled | sed 's/^PRESET_NET_WIFI_COUNTRYCODE=.*/PRESET_NET_WIFI_COUNTRYCODE="cz"/' >"$f"
 expect fail "lowercase country code is rejected" "$f"
 
+# Membership is checked against tzdata's ISO 3166 table, as timezones are.
+if [ -f /usr/share/zoneinfo/iso3166.tab ]; then
+  for code in UK ZZ; do
+    f="$(case_file "country-$code")"; filled | sed "s/^PRESET_NET_WIFI_COUNTRYCODE=.*/PRESET_NET_WIFI_COUNTRYCODE=\"$code\"/" >"$f"
+    expect fail "unassigned country code $code is rejected" "$f"
+  done
+else
+  printf 'skip country code membership: no /usr/share/zoneinfo/iso3166.tab\n'
+fi
+f="$(case_file country-GB)"; filled | sed 's/^PRESET_NET_WIFI_COUNTRYCODE=.*/PRESET_NET_WIFI_COUNTRYCODE="GB"/' >"$f"
+expect ok "assigned country code GB passes" "$f"
+
 f="$(case_file bad-tz)"; filled | sed 's#^PRESET_TIMEZONE=.*#PRESET_TIMEZONE="Europe/Nowhere"#' >"$f"
 expect fail "unknown timezone is rejected" "$f"
 

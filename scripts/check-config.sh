@@ -96,8 +96,14 @@ if [ "$(val PRESET_NET_WIFI_ENABLED)" = 1 ]; then
   if has PRESET_NET_WIFI_KEY && { [ "${#psk}" -lt 8 ] || [ "${#psk}" -gt 63 ]; }; then
     err "PRESET_NET_WIFI_KEY: WPA-PSK must be 8-63 characters"
   fi
-  if has PRESET_NET_WIFI_COUNTRYCODE && ! [[ "$(val PRESET_NET_WIFI_COUNTRYCODE)" =~ ^[A-Z]{2}$ ]]; then
+  cc="$(val PRESET_NET_WIFI_COUNTRYCODE)"
+  if has PRESET_NET_WIFI_COUNTRYCODE && ! [[ "$cc" =~ ^[A-Z]{2}$ ]]; then
     err "PRESET_NET_WIFI_COUNTRYCODE: must be two uppercase letters (ISO 3166)"
+  elif [ -n "$cc" ] && [ -f /usr/share/zoneinfo/iso3166.tab ] \
+    && ! awk -F'\t' -v c="$cc" '!/^#/ && $1 == c { found = 1 } END { exit !found }' \
+      /usr/share/zoneinfo/iso3166.tab; then
+    # tzdata's ISO 3166-1 alpha-2 table; skipped where tzdata is missing.
+    err "PRESET_NET_WIFI_COUNTRYCODE: not an assigned ISO 3166 code (e.g. GB, not UK)"
   fi
   if [ "$(val PRESET_CONNECT_WIRELESS)" != n ]; then
     err "PRESET_CONNECT_WIRELESS: must be n for an unattended boot"
