@@ -20,7 +20,8 @@
 #   network-dependent ones (apt, firewall), so a missing network still leaves
 #   the board reachable.
 # - Answering "no" for sudo or SSH hardening on a rerun removes the drop-in
-#   an earlier run created.
+#   an earlier run created. So does SSH hardening "yes" while AGENT_USER has
+#   no valid authorized key, so password login keeps working.
 # - Use a minimal (server) image: on desktop images armbian-firstlogin may log
 #   the console out before it reaches this script.
 #
@@ -28,8 +29,48 @@
 # '__ASK_<NAME>__' value. For a declined '__ASK_OPTIONAL_<NAME>__' value it
 # sets the value to '' (do not delete the line here). The values are in single
 # quotes, so $, backticks, backslashes and double quotes stay literal; a value
-# must not contain a single quote.
+# must not contain a single quote. The check below reads the settings as text
+# before bash parses them as code, and stops on a value that breaks out of
+# its quotes.
 # ==============================================================================
+
+# Prints the first bad setting, or nothing when every setting is one line in
+# single quotes.
+_armbian_provisioning_settings_ok() (
+  local file="$1" name line count re
+  for name in NEW_HOSTNAME AGENT_USER AGENT_SSH_PUBKEY AGENT_NOPASSWD_SUDO \
+    HARDEN_SSH UPGRADE_SYSTEM ENABLE_FIREWALL; do
+    re="^  local $name='[^']*'([[:space:]]+#.*)?\$"
+    count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      [[ "$line" == "  local $name="* ]] || continue
+      count=$((count + 1))
+      if ! [[ "$line" =~ $re ]]; then
+        echo "$name must be one line in single quotes, with no single quote inside"
+        return 0
+      fi
+    done <"$file"
+    [ "$count" -eq 1 ] || { echo "$name must be set exactly once"; return 0; }
+  done
+)
+
+_armbian_provisioning_bad="$(_armbian_provisioning_settings_ok "${BASH_SOURCE[0]}")"
+unset -f _armbian_provisioning_settings_ok
+if [ -n "$_armbian_provisioning_bad" ]; then
+  echo "error: $_armbian_provisioning_bad" >&2
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    # Sourced by armbian-firstlogin: log, report and return without aborting it.
+    echo "error: $_armbian_provisioning_bad" >>"${TARGET_ROOT:-}/var/log/armbian-provisioning.log" || true
+    echo "Provisioning FAILED, see /var/log/armbian-provisioning.log" >&2
+    unset _armbian_provisioning_bad
+    return 0
+  fi
+  [ "$#" -ne 0 ] \
+    || echo "error: $_armbian_provisioning_bad" >>"${TARGET_ROOT:-}/var/log/armbian-provisioning.log" \
+    || true
+  exit 1
+fi
+unset _armbian_provisioning_bad
 
 _armbian_provisioning() (
   set -euo pipefail
@@ -65,8 +106,8 @@ _armbian_provisioning() (
   # Not needed: "add-apt-repository universe" (Armbian images for resolute
   # already enable main restricted universe multiverse) and nodejs/npm (the
   # Claude Code native installer ships an arm64 binary without Node.js).
-  local UPGRADE_SYSTEM="yes"
-  local ENABLE_FIREWALL="yes"   # ufw: deny incoming except SSH and mDNS
+  local UPGRADE_SYSTEM='yes'
+  local ENABLE_FIREWALL='yes'   # ufw: deny incoming except SSH and mDNS
   local -a PACKAGES=(
     # --- Agent essentials ---
     curl            # HTTP client; runs the Claude Code installer, calls APIs
@@ -201,9 +242,6 @@ _armbian_provisioning() (
     mv "$tmp" "$SUDOERS_FILE"
   }
 
-  # Disable password login only if authorized_keys holds at least one key
-  # ssh-keygen can parse: armbian-firstlogin fetches PRESET_USER_KEY with curl
-  # without --fail, so a wrong URL leaves an HTML error page in that file.
   # Remove the drop-in an earlier run left, so password login works again.
   remove_ssh_hardening() {
     [ -e "$SSHD_DROPIN" ] || return 0
@@ -212,13 +250,16 @@ _armbian_provisioning() (
     reload_ssh
   }
 
+  # Disable password login only if authorized_keys holds at least one key
+  # ssh-keygen can parse: armbian-firstlogin fetches PRESET_USER_KEY with curl
+  # without --fail, so a wrong URL leaves an HTML error page in that file.
   harden_ssh() {
     if [ "$HARDEN_SSH" != yes ]; then
       remove_ssh_hardening
       return 0
     fi
     if ! ssh-keygen -lf "$AGENT_HOME/.ssh/authorized_keys" >/dev/null 2>&1; then
-      echo "warning: $AGENT_USER has no valid authorized SSH key; skipping SSH hardening and removing any earlier one, password login stays on" >&2
+      echo "warning: $AGENT_USER has no valid authorized SSH key; skipping SSH hardening, password login stays on" >&2
       remove_ssh_hardening
       return 0
     fi

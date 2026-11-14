@@ -109,10 +109,12 @@ check "rejection reason is written to the log" 'grep -q "does not exist" "$R/var
 reset_root; f="$WORK/prov-multiline.sh"; content="$(cat "$(script_with)")"
 printf '%s\n' "${content//"$TEST_KEY"/"$TEST_KEY"$'\n'"command=/bin/sh $TEST_KEY"}" >"$f"
 check "multi-line test script really holds two key lines" '[ "$(grep -c "ssh-ed25519" "$f")" -ge 2 ] && bash -n "$f"'
-check "multi-line public key is rejected" '! run "$f" && grep -q "not a single-line OpenSSH public key" "$WORK/out"' "$(cat "$WORK/out")"
+check "multi-line public key is rejected" '! run "$f" && grep -q "AGENT_SSH_PUBKEY must be one line in single quotes" "$WORK/out"' "$(cat "$WORK/out")"
 
-# A key comment is free text; shell syntax in it must stay literal.
-INJ_KEY="${TEST_KEY% *} x\$(touch $WORK/pwned1) \`touch $WORK/pwned2\` \"\$HOME"
+# A key comment is free text; shell syntax in it must stay literal. No double
+# quote here: in the old double-quoted template it caused a syntax error, so
+# nothing ran and these checks proved nothing.
+INJ_KEY="${TEST_KEY% *} x\$(touch $WORK/pwned1) \`touch $WORK/pwned2\` \$HOME"
 reset_root; f="$(script_with armbian-01 test_user yes yes "$INJ_KEY")"
 run "$f" --check
 check "shell syntax in a key comment is not executed by --check" '[ ! -e "$WORK/pwned1" ] && [ ! -e "$WORK/pwned2" ]' "$(cat "$WORK/out")"
@@ -120,6 +122,21 @@ check "key comment with shell syntax passes --check" 'grep -q "^OK:" "$WORK/out"
 run "$f"
 check "shell syntax in a key comment is not executed by a run" '[ ! -e "$WORK/pwned1" ] && [ ! -e "$WORK/pwned2" ]' "$(cat "$WORK/out")"
 check "key with shell syntax in its comment is stored literally" 'grep -qxF "$INJ_KEY" "$R/home/test_user/.ssh/authorized_keys"' "$(cat "$R/home/test_user/.ssh/authorized_keys")"
+
+# A single quote in a value would end the quoting; the text check stops it
+# before bash parses the settings.
+QUOTE_KEY="${TEST_KEY% *} it'\$(touch $WORK/pwned3)'s"
+reset_root; f="$(script_with armbian-01 test_user yes yes "$QUOTE_KEY")"
+run "$f" --check; rc=$?
+check "value breaking out of single quotes fails --check" '[ $rc -eq 1 ] && grep -q "AGENT_SSH_PUBKEY must be one line in single quotes" "$WORK/out"' "rc=$rc $(cat "$WORK/out")"
+check "value breaking out of single quotes runs nothing" '[ ! -e "$WORK/pwned3" ] && [ ! -e "$WORK/calls" ]' "$(calls)"
+run "$f"; rc=$?
+check "value breaking out of single quotes stops a run before any change" '[ $rc -eq 1 ] && [ ! -e "$WORK/pwned3" ] && [ ! -e "$WORK/calls" ]' "rc=$rc $(calls)"
+check "value breaking out of single quotes is logged" 'grep -q "must be one line in single quotes" "$R/var/log/armbian-provisioning.log"' "$(cat "$R/var/log/armbian-provisioning.log" 2>/dev/null)"
+
+reset_root; f="$(script_with armbian-01 test_user yes yes "${TEST_KEY% *} josef's laptop")"
+run "$f" --check; rc=$?
+check "stray single quote fails --check with a clear reason" '[ $rc -eq 1 ] && grep -q "no single quote inside" "$WORK/out" && ! grep -qi "syntax error" "$WORK/out"' "rc=$rc $(cat "$WORK/out")"
 
 reset_root; f="$(script_with armbian-01 ghost)"
 check "--check does not need the user to exist on the workstation" 'run "$f" --check' "$(cat "$WORK/out")"
@@ -210,7 +227,8 @@ sourced() {
     echo "after-source"
     case $- in *e*) echo "LEAK errexit" ;; esac
     case $- in *u*) echo "LEAK nounset" ;; esac
-    declare -F | grep -q " _armbian_provisioning$" && echo "LEAK function"
+    declare -F | grep -q " _armbian_provisioning" && echo "LEAK function"
+    [ -n "${_armbian_provisioning_bad+x}" ] && echo "LEAK variable"
     true' _ "$1" >"$WORK/out" 2>&1
 }
 reset_root; f="$(script_with)"
@@ -224,6 +242,13 @@ sourced "$f"
 check "failed provisioning does not abort the caller" 'grep -q after-source "$WORK/out"' "$(cat "$WORK/out")"
 check "failed provisioning is reported to the caller" 'grep -q "Provisioning FAILED" "$WORK/out"' "$(cat "$WORK/out")"
 check "sourced run stops at the failing step" '! grep -q "^ufw" "$WORK/calls"' "$(calls)"
+make_stubs
+
+reset_root; g="$(script_with armbian-01 test_user yes yes "${TEST_KEY% *} it'\$(touch $WORK/pwned4)'s")"
+sourced "$g"
+check "sourced file with a broken-out value returns to the caller" 'grep -q after-source "$WORK/out" && ! grep -q LEAK "$WORK/out"' "$(cat "$WORK/out")"
+check "sourced file with a broken-out value is reported and runs nothing" 'grep -q "Provisioning FAILED" "$WORK/out" && [ ! -e "$WORK/pwned4" ] && [ ! -e "$WORK/calls" ]' "$(cat "$WORK/out"; calls)"
+reset_root; printf '#!/bin/sh\nexit 1\n' >"$WORK/bin/apt-get"; chmod +x "$WORK/bin/apt-get"
 reset_root
 run "$f"; rc=$?
 check "failing apt-get makes a direct run fail" '[ $rc -ne 0 ]'
